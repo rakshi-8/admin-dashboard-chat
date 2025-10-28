@@ -1,0 +1,199 @@
+Frontend — client
+
+client/package.json
+{
+  "name": "admin-chat-client",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "axios": "^1.4.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "socket.io-client": "^4.7.0"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
+  }
+}
+
+client/.env.example
+REACT_APP_SERVER=http://localhost:5000
+
+client/public/index.html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Admin Dashboard with Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+
+client/src/index.js
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import './index.css';
+
+createRoot(document.getElementById('root')).render(<App />);
+
+client/src/index.css
+body { margin: 0; font-family: Arial, Helvetica, sans-serif; background:#f5f7fb; }
+.app { padding: 16px; }
+.card { background:white; border:1px solid #e6e9ef; border-radius:8px; padding:12px; }
+.sidebar { width: 240px; border-right:1px solid #eee; padding-right:12px; }
+.user-item { padding:8px; border-bottom:1px solid #f0f0f0; cursor:pointer; }
+.user-item:hover { background:#f6f8fb; }
+.chat-bubble { display:inline-block; padding:8px 10px; border-radius:8px; border:1px solid #eee; background:#fff; max-width:70%; }
+.chat-bubble.me { background:#dcf8c6; }
+
+client/src/App.jsx
+import React from 'react';
+import AdminDashboard from './AdminDashboard';
+
+export default function App(){
+  return (
+    <div className="app">
+      <AdminDashboard />
+    </div>
+  );
+}
+
+client/src/AdminDashboard.jsx
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import { io } from 'socket.io-client';
+
+const SERVER = process.env.REACT_APP_SERVER || 'http://localhost:5000';
+
+export default function AdminDashboard(){
+  const [token, setToken] = useState('');
+  const [me, setMe] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [stats, setStats] = useState({ users: 0, chats: 0 });
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState('');
+  const [socket, setSocket] = useState(null);
+
+  // demo login - uses admin@example.com/admin123
+  async function demoLogin(){
+    try {
+      const res = await axios.post(`${SERVER}/api/login`, { email: 'admin@example.com', password: 'admin123' });
+      setToken(res.data.token);
+      setMe(res.data.user);
+
+      // connect socket after login
+      const s = io(SERVER, { autoConnect: false });
+      setSocket(s);
+      s.connect();
+      s.emit('join', { email: res.data.user.email });
+      s.on('message', (msg) => setMessages(prev => [...prev, msg]));
+    } catch (err) {
+      alert('Login failed. Make sure you created admin user on backend.');
+    }
+  }
+
+  async function fetchUsers(){
+    if (!token) return;
+    const res = await axios.get(`${SERVER}/api/users`, { headers: { Authorization: `Bearer ${token}` } });
+    setUsers(res.data.users || []);
+  }
+
+  async function fetchStats(){
+    if (!token) return;
+    try {
+      const res = await axios.get(`${SERVER}/api/stats`, { headers: { Authorization: `Bearer ${token}` } });
+      setStats(res.data || {});
+    } catch (e) {
+      // fallback using users/messages count
+      const u = users.length;
+      setStats({ users: u, chats: messages.length });
+    }
+  }
+
+  async function openChat(user){
+    setSelectedUser(user);
+    setMessages([]);
+    if (!token) return;
+    const res = await axios.get(`${SERVER}/api/chat/${user.email}`, { headers: { Authorization: `Bearer ${token}` }});
+    setMessages(res.data.messages || []);
+    // ensure socket join for user room as well
+    socket?.emit('join', { email: user.email });
+  }
+
+  function sendMessage(){
+    if (!me || !selectedUser || !text.trim()) return;
+    const payload = { from: me.email, to: selectedUser.email, text };
+    // send via socket
+    socket?.emit('sendMessage', payload);
+    setText('');
+  }
+
+  useEffect(() => {
+    if (token) { fetchUsers(); fetchStats(); }
+    return () => { socket?.disconnect(); };
+    // eslint-disable-next-line
+  }, [token]);
+
+  return (
+    <div style={{display:'flex', gap:16}}>
+      {!token ? (
+        <div style={{maxWidth:600}}>
+          <div className="card"><h2>Admin Dashboard (Demo)</h2>
+            <p>This is a showcase/demo. Click below to login as demo admin (requires backend user created).</p>
+            <button onClick={demoLogin}>Login as Demo Admin</button>
+            <p style={{marginTop:8}}>Demo credentials: admin@example.com / admin123</p>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="sidebar card">
+            <h3>Users</h3>
+            <button onClick={fetchUsers}>Refresh</button>
+            <div style={{marginTop:8}}>
+              {users.map(u => (
+                <div key={u._id} className="user-item" onClick={() => openChat(u)}>
+                  <strong>{u.name || u.email}</strong><br/>
+                  <small>{u.email}</small>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{flex:1}}>
+            <div className="card" style={{display:'flex', gap:12, alignItems:'center'}}>
+              <div style={{padding:12}}><h4>Users</h4><div>{stats.users}</div></div>
+              <div style={{padding:12}}><h4>Chats</h4><div>{stats.chats}</div></div>
+            </div>
+
+            <div className="card" style={{marginTop:12}}>
+              <h4>Chat {selectedUser ? `with ${selectedUser.email}` : ''}</h4>
+              <div style={{minHeight:240, maxHeight:440, overflow:'auto', padding:8, border:'1px solid #f0f0f0'}}>
+                {messages.map((m, i) => (
+                  <div key={i} style={{margin:6, textAlign: m.from === me.email ? 'right' : 'left'}}>
+                    <div className={`chat-bubble ${m.from === me.email ? 'me' : ''}`}>
+                      <small>{m.from}</small>
+                      <div>{m.text}</div>
+                      <small style={{fontSize:10, color:'#888'}}>{new Date(m.createdAt || m.updatedAt || m.timestamp).toLocaleString()}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{display:'flex', gap:8, marginTop:8}}>
+                <input value={text} onChange={e => setText(e.target.value)} placeholder="Type message" style={{flex:1, padding:8}} />
+                <button onClick={sendMessage}>Send</button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
